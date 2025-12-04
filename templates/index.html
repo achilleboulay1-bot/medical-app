@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+
+{% block title %}Accueil - Gestion Médicale{% endblock %}
+
+{% block content %}
+<div style="text-align: center; padding: 60px 20px;">
+    <h1 style="font-size: 2.5em; margin-bottom: 20px; color: #2c3e50;">Bienvenue</h1>
+    <p style="font-size: 1.2em; margin-bottom: 40px; color: #7f8c8d;">Application de gestion pour cabinet médical et kinésithérapie</p>
+    
+    <div style="display: flex; gap: 20px; justify-content: center; flex-wrap: wrap;">
+        <a href="{{ url_for('login') }}" class="btn" style="background: #3498db;">Se connecter</a>
+        <a href="{{ url_for('register') }}" class="btn" style="background: #27ae60;">S'inscrire</a>
+    </div>
+</div>
+{% endblock %}
+

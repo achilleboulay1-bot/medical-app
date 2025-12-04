@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+
+{% block title %}Tableau de bord{% endblock %}
+
+{% block content %}
+<h2>Tableau de bord</h2>
+<p>Bienvenue, {{ current_user.first_name }} {{ current_user.last_name }} ({{ current_user.role }})</p>
+
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-top: 30px;">
+    <div class="card">
+        <h3>Rendez-vous aujourd'hui</h3>
+        <p style="font-size: 2em; color: #3498db;">{{ today_appointments }}</p>
+    </div>
+    
+    <div class="card">
+        <h3>Patients</h3>
+        <p style="font-size: 2em; color: #27ae60;">{{ total_patients }}</p>
+    </div>
+    
+    <div class="card">
+        <h3>Factures en attente</h3>
+        <p style="font-size: 2em; color: #e74c3c;">{{ pending_invoices }}</p>
+    </div>
+    
+    <div class="card">
+        <h3>Messages non lus</h3>
+        <p style="font-size: 2em; color: #f39c12;">{{ unread_messages }}</p>
+    </div>
+</div>
+
+{% if current_user.role == 'practitioner' %}
+<div style="margin-top: 40px;">
+    <h3>Prochains rendez-vous</h3>
+    {% if upcoming_appointments %}
+        <div style="margin-top: 20px;">
+            {% for appointment in upcoming_appointments %}
+            <div class="card">
+                <strong>{{ appointment.start_time.strftime('%d/%m/%Y à %H:%M') }}</strong>
+                {% if appointment.patient %}
+                    - {{ appointment.patient.first_name }} {{ appointment.patient.last_name }}
+                {% endif %}
+                <span style="float: right; padding: 5px 10px; background: #ecf0f1; border-radius: 3px;">
+                    {{ appointment.status }}
+                </span>
+            </div>
+            {% endfor %}
+        </div>
+    {% else %}
+        <p style="margin-top: 10px; color: #7f8c8d;">Aucun rendez-vous à venir</p>
+    {% endif %}
+</div>
+
+<div style="margin-top: 40px;">
+    <h3>Patients récents</h3>
+    {% if recent_patients %}
+        <div style="margin-top: 20px;">
+            {% for patient in recent_patients %}
+            <div class="card">
+                <a href="{{ url_for('patient_detail', id=patient.id) }}" style="text-decoration: none; color: #3498db;">
+                    {{ patient.first_name }} {{ patient.last_name }}
+                </a>
+            </div>
+            {% endfor %}
+        </div>
+    {% else %}
+        <p style="margin-top: 10px; color: #7f8c8d;">Aucun patient</p>
+    {% endif %}
+</div>
+{% endif %}
+{% endblock %}
+

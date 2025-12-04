@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+
+{% block title %}Programmes d'exercices{% endblock %}
+
+{% block content %}
+<h2>Programmes d'exercices</h2>
+
+<a href="{{ url_for('new_exercise_program') }}" class="btn" style="margin-bottom: 20px;">Nouveau programme</a>
+
+{% if programs %}
+    {% for program in programs %}
+    <div class="card">
+        <h3>{{ program.title }}</h3>
+        <p>{{ program.description or '' }}</p>
+    </div>
+    {% endfor %}
+{% else %}
+    <p>Aucun programme</p>
+{% endif %}
+{% endblock %}
+

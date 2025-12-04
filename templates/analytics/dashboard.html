@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block title %}Analyses{% endblock %}
+
+{% block content %}
+<h2>Analyses et statistiques</h2>
+
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-top: 30px;">
+    <div class="card">
+        <h3>Nouveaux patients ce mois</h3>
+        <p style="font-size: 2em; color: #3498db;">{{ new_patients }}</p>
+    </div>
+    
+    <div class="card">
+        <h3>Taux d'annulation</h3>
+        <p style="font-size: 2em; color: #e74c3c;">{{ cancellation_rate }}%</p>
+    </div>
+    
+    <div class="card">
+        <h3>Revenus</h3>
+        <p style="font-size: 2em; color: #27ae60;">{{ revenue }} €</p>
+    </div>
+    
+    <div class="card">
+        <h3>Exercices complétés</h3>
+        <p style="font-size: 2em; color: #f39c12;">{{ exercise_completions }}</p>
+    </div>
+</div>
+{% endblock %}
+

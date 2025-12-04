@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block title %}Patients{% endblock %}
+
+{% block content %}
+<h2>Liste des patients</h2>
+
+<form method="GET" style="margin-bottom: 20px;">
+    <input type="text" name="search" placeholder="Rechercher un patient..." value="{{ search }}" style="width: 300px; padding: 10px;">
+    <button type="submit" class="btn">Rechercher</button>
+</form>
+
+<a href="{{ url_for('new_patient') }}" class="btn" style="margin-bottom: 20px;">Nouveau patient</a>
+
+{% if patients %}
+    <div style="display: grid; gap: 15px;">
+        {% for patient in patients %}
+        <div class="card">
+            <a href="{{ url_for('patient_detail', id=patient.id) }}" style="text-decoration: none; color: #3498db; font-size: 1.2em;">
+                {{ patient.first_name }} {{ patient.last_name }}
+            </a>
+            {% if patient.email %}<p style="color: #7f8c8d; margin-top: 5px;">{{ patient.email }}</p>{% endif %}
+        </div>
+        {% endfor %}
+    </div>
+{% else %}
+    <p>Aucun patient trouvé.</p>
+{% endif %}
+{% endblock %}
+

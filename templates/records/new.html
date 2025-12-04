@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block title %}Nouveau dossier médical{% endblock %}
+
+{% block content %}
+<h2>Nouveau dossier médical</h2>
+
+<form method="POST" enctype="multipart/form-data">
+    <div class="form-group">
+        <label for="patient_id">Patient *</label>
+        <select id="patient_id" name="patient_id" required>
+            <option value="">Sélectionner un patient</option>
+            {% for patient in patients %}
+            <option value="{{ patient.id }}" {% if patient_id == patient.id %}selected{% endif %}>
+                {{ patient.first_name }} {{ patient.last_name }}
+            </option>
+            {% endfor %}
+        </select>
+    </div>
+    
+    <div class="form-group">
+        <label for="session_date">Date de la séance *</label>
+        <input type="datetime-local" id="session_date" name="session_date" required>
+    </div>
+    
+    <div class="form-group">
+        <label for="notes">Notes</label>
+        <textarea id="notes" name="notes" rows="6"></textarea>
+    </div>
+    
+    <div class="form-group">
+        <label for="pain_level">Niveau de douleur (0-10)</label>
+        <input type="number" id="pain_level" name="pain_level" min="0" max="10">
+    </div>
+    
+    <button type="submit" class="btn" style="width: 100%;">Créer le dossier</button>
+</form>
+{% endblock %}
+

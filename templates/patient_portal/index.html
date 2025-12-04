@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block title %}Portail patient{% endblock %}
+
+{% block content %}
+<h2>Mon espace patient</h2>
+
+{% if patient %}
+    <div class="card">
+        <h3>Mes informations</h3>
+        <p>{{ patient.first_name }} {{ patient.last_name }}</p>
+    </div>
+    
+    <div class="card">
+        <h3>Mes rendez-vous</h3>
+        {% if appointments %}
+            {% for appointment in appointments %}
+            <p>{{ appointment.start_time.strftime('%d/%m/%Y à %H:%M') }}</p>
+            {% endfor %}
+        {% else %}
+            <p>Aucun rendez-vous à venir</p>
+        {% endif %}
+    </div>
+{% else %}
+    <p>Aucun dossier patient trouvé.</p>
+{% endif %}
+{% endblock %}
+

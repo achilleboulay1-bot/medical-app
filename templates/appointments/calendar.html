@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block title %}Rendez-vous{% endblock %}
+
+{% block content %}
+<h2>Calendrier des rendez-vous</h2>
+
+<a href="{{ url_for('new_appointment') }}" class="btn" style="margin-bottom: 20px;">Nouveau rendez-vous</a>
+
+<div class="card">
+    <h3>Rendez-vous</h3>
+    {% if appointments %}
+        {% for appointment in appointments %}
+        <div style="border-bottom: 1px solid #eee; padding: 15px 0;">
+            <strong>{{ appointment.start_time.strftime('%d/%m/%Y à %H:%M') }}</strong>
+            {% if appointment.patient %}
+                - {{ appointment.patient.first_name }} {{ appointment.patient.last_name }}
+            {% endif %}
+            <span style="float: right; padding: 5px 10px; background: #ecf0f1; border-radius: 3px;">
+                {{ appointment.status }}
+            </span>
+            <a href="{{ url_for('appointment_detail', id=appointment.id) }}" style="margin-left: 10px;">Voir</a>
+        </div>
+        {% endfor %}
+    {% else %}
+        <p>Aucun rendez-vous</p>
+    {% endif %}
+</div>
+{% endblock %}
+

@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+
+{% block title %}Inscription{% endblock %}
+
+{% block content %}
+<h2 style="text-align: center; margin-bottom: 30px;">Créer un compte</h2>
+
+<form method="POST" action="{{ url_for('register') }}">
+    <div class="form-group">
+        <label for="first_name">Prénom</label>
+        <input type="text" id="first_name" name="first_name" required>
+    </div>
+    
+    <div class="form-group">
+        <label for="last_name">Nom</label>
+        <input type="text" id="last_name" name="last_name" required>
+    </div>
+    
+    <div class="form-group">
+        <label for="email">Email</label>
+        <input type="email" id="email" name="email" required>
+    </div>
+    
+    <div class="form-group">
+        <label for="phone">Téléphone (optionnel)</label>
+        <input type="text" id="phone" name="phone">
+    </div>
+    
+    <div class="form-group">
+        <label for="password">Mot de passe</label>
+        <input type="password" id="password" name="password" required>
+    </div>
+    
+    <div class="form-group">
+        <label for="role">Rôle</label>
+        <select id="role" name="role" required>
+            <option value="patient">Patient</option>
+            <option value="practitioner">Praticien</option>
+            <option value="assistant">Assistant</option>
+        </select>
+    </div>
+    
+    <div id="practitioner_fields" style="display: none;">
+        <div class="form-group">
+            <label for="specialty">Spécialité</label>
+            <input type="text" id="specialty" name="specialty">
+        </div>
+        
+        <div class="form-group">
+            <label for="rpps_number">Numéro RPPS</label>
+            <input type="text" id="rpps_number" name="rpps_number">
+        </div>
+    </div>
+    
+    <button type="submit" class="btn" style="width: 100%;">S'inscrire</button>
+</form>
+
+<p style="text-align: center; margin-top: 20px;">
+    Déjà un compte ? <a href="{{ url_for('login') }}">Se connecter</a>
+</p>
+
+<script>
+    document.getElementById('role').addEventListener('change', function() {
+        const practitionerFields = document.getElementById('practitioner_fields');
+        if (this.value === 'practitioner') {
+            practitionerFields.style.display = 'block';
+        } else {
+            practitionerFields.style.display = 'none';
+        }
+    });
+</script>
+{% endblock %}
+

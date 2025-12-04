@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block title %}Nouveau rendez-vous{% endblock %}
+
+{% block content %}
+<h2>Nouveau rendez-vous</h2>
+
+<form method="POST">
+    <div class="form-group">
+        <label for="patient_id">Patient</label>
+        <select id="patient_id" name="patient_id">
+            <option value="">Sélectionner un patient</option>
+            {% for patient in patients %}
+            <option value="{{ patient.id }}" {% if patient_id == patient.id %}selected{% endif %}>
+                {{ patient.first_name }} {{ patient.last_name }}
+            </option>
+            {% endfor %}
+        </select>
+    </div>
+    
+    <div class="form-group">
+        <label for="start_time">Date et heure de début *</label>
+        <input type="datetime-local" id="start_time" name="start_time" required>
+    </div>
+    
+    <div class="form-group">
+        <label for="end_time">Date et heure de fin *</label>
+        <input type="datetime-local" id="end_time" name="end_time" required>
+    </div>
+    
+    <div class="form-group">
+        <label for="title">Titre</label>
+        <input type="text" id="title" name="title">
+    </div>
+    
+    <div class="form-group">
+        <label for="notes">Notes</label>
+        <textarea id="notes" name="notes" rows="4"></textarea>
+    </div>
+    
+    <button type="submit" class="btn" style="width: 100%;">Créer le rendez-vous</button>
+    <a href="{{ url_for('appointments') }}" class="btn" style="width: 100%; margin-top: 10px; background: #95a5a6; text-align: center; display: block;">Annuler</a>
+</form>
+{% endblock %}
+

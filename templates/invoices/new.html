@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block title %}Nouvelle facture{% endblock %}
+
+{% block content %}
+<h2>Nouvelle facture</h2>
+
+<form method="POST">
+    <div class="form-group">
+        <label for="patient_id">Patient *</label>
+        <select id="patient_id" name="patient_id" required>
+            <option value="">Sélectionner un patient</option>
+            {% for patient in patients %}
+            <option value="{{ patient.id }}">{{ patient.first_name }} {{ patient.last_name }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    
+    <div class="form-group">
+        <label for="invoice_date">Date *</label>
+        <input type="date" id="invoice_date" name="invoice_date" value="{{ date.today().strftime('%Y-%m-%d') }}" required>
+    </div>
+    
+    <div class="form-group">
+        <label for="items">Articles (JSON)</label>
+        <textarea id="items" name="items" rows="4">[{"description": "Consultation", "quantity": 1, "price": 50}]</textarea>
+    </div>
+    
+    <button type="submit" class="btn" style="width: 100%;">Créer la facture</button>
+</form>
+{% endblock %}
+

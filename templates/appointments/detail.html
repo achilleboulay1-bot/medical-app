@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+
+{% block title %}Rendez-vous{% endblock %}
+
+{% block content %}
+<h2>Rendez-vous</h2>
+
+<div class="card">
+    <p><strong>Date:</strong> {{ appointment.start_time.strftime('%d/%m/%Y à %H:%M') }}</p>
+    {% if appointment.patient %}
+    <p><strong>Patient:</strong> {{ appointment.patient.first_name }} {{ appointment.patient.last_name }}</p>
+    {% endif %}
+    <p><strong>Statut:</strong> {{ appointment.status }}</p>
+    {% if appointment.notes %}
+    <p><strong>Notes:</strong> {{ appointment.notes }}</p>
+    {% endif %}
+</div>
+
+<a href="{{ url_for('appointments') }}" class="btn">Retour</a>
+{% endblock %}
+

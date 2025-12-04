@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block title %}Nouvel exercice{% endblock %}
+
+{% block content %}
+<h2>Nouvel exercice</h2>
+
+<form method="POST">
+    <div class="form-group">
+        <label for="title">Titre *</label>
+        <input type="text" id="title" name="title" required>
+    </div>
+    
+    <div class="form-group">
+        <label for="description">Description</label>
+        <textarea id="description" name="description" rows="4"></textarea>
+    </div>
+    
+    <button type="submit" class="btn" style="width: 100%;">Créer</button>
+</form>
+{% endblock %}
+

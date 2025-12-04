@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+
+{% block title %}{{ patient.first_name }} {{ patient.last_name }}{% endblock %}
+
+{% block content %}
+<h2>{{ patient.first_name }} {{ patient.last_name }}</h2>
+
+<div style="margin-top: 20px;">
+    <a href="{{ url_for('edit_patient', id=patient.id) }}" class="btn">Modifier</a>
+    <a href="{{ url_for('new_medical_record', patient_id=patient.id) }}" class="btn" style="background: #27ae60;">Nouveau dossier médical</a>
+</div>
+
+<div class="card" style="margin-top: 20px;">
+    <h3>Informations personnelles</h3>
+    <p><strong>Email:</strong> {{ patient.email or 'Non renseigné' }}</p>
+    <p><strong>Téléphone:</strong> {{ patient.phone or 'Non renseigné' }}</p>
+    <p><strong>Date de naissance:</strong> {{ patient.birth_date.strftime('%d/%m/%Y') if patient.birth_date else 'Non renseigné' }}</p>
+    <p><strong>Genre:</strong> {{ patient.gender or 'Non renseigné' }}</p>
+    <p><strong>Adresse:</strong> {{ patient.address or 'Non renseigné' }}</p>
+    <p><strong>Ville:</strong> {{ patient.city or 'Non renseigné' }}</p>
+</div>
+
+{% if patient.medical_history %}
+<div class="card">
+    <h3>Antécédents médicaux</h3>
+    <p>{{ patient.medical_history }}</p>
+</div>
+{% endif %}
+
+{% if patient.allergies %}
+<div class="card">
+    <h3>Allergies</h3>
+    <p>{{ patient.allergies }}</p>
+</div>
+{% endif %}
+
+<div class="card">
+    <h3>Dossiers médicaux récents</h3>
+    {% if records %}
+        {% for record in records %}
+        <div style="border-bottom: 1px solid #eee; padding: 10px 0;">
+            <strong>{{ record.session_date.strftime('%d/%m/%Y') }}</strong>
+            <p>{{ record.notes[:100] if record.notes else 'Aucune note' }}...</p>
+        </div>
+        {% endfor %}
+    {% else %}
+        <p>Aucun dossier médical</p>
+    {% endif %}
+</div>
+
+<a href="{{ url_for('patients') }}" class="btn" style="margin-top: 20px;">Retour à la liste</a>
+{% endblock %}
+

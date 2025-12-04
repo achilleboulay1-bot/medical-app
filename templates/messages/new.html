@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block title %}Nouveau message{% endblock %}
+
+{% block content %}
+<h2>Nouveau message</h2>
+
+<form method="POST">
+    <div class="form-group">
+        <label for="recipient_id">Destinataire *</label>
+        <select id="recipient_id" name="recipient_id" required>
+            <option value="">Sélectionner un destinataire</option>
+            {% for recipient in recipients %}
+            <option value="{{ recipient.id }}">{{ recipient.first_name }} {{ recipient.last_name }} ({{ recipient.role }})</option>
+            {% endfor %}
+        </select>
+    </div>
+    
+    <div class="form-group">
+        <label for="subject">Sujet</label>
+        <input type="text" id="subject" name="subject">
+    </div>
+    
+    <div class="form-group">
+        <label for="content">Message *</label>
+        <textarea id="content" name="content" rows="6" required></textarea>
+    </div>
+    
+    <button type="submit" class="btn" style="width: 100%;">Envoyer</button>
+</form>
+{% endblock %}
+

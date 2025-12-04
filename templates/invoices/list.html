@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+
+{% block title %}Factures{% endblock %}
+
+{% block content %}
+<h2>Factures</h2>
+
+<a href="{{ url_for('new_invoice') }}" class="btn" style="margin-bottom: 20px;">Nouvelle facture</a>
+
+{% if invoices %}
+    {% for invoice in invoices %}
+    <div class="card">
+        <strong>{{ invoice.invoice_number }}</strong> - {{ invoice.invoice_date.strftime('%d/%m/%Y') }}
+        <p>Patient: {{ invoice.patient.first_name }} {{ invoice.patient.last_name }}</p>
+        <p>Total: {{ invoice.total }} € - Statut: {{ invoice.status }}</p>
+        <a href="{{ url_for('invoice_detail', id=invoice.id) }}">Voir</a>
+    </div>
+    {% endfor %}
+{% else %}
+    <p>Aucune facture</p>
+{% endif %}
+{% endblock %}
+

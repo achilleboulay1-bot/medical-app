@@ -1,0 +1,1116 @@
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file, session
+from flask_sqlalchemy import SQLAlchemy
+from flask_migrate import Migrate
+from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
+from datetime import datetime, date, timedelta
+from functools import wraps
+import os
+import json
+from dotenv import load_dotenv
+from sqlalchemy import or_, and_, func
+from sqlalchemy.orm import relationship
+import uuid
+from cryptography.fernet import Fernet
+import base64
+
+load_dotenv()
+
+app = Flask(__name__)
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///medical_practice.db')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['UPLOAD_FOLDER'] = os.path.join('static', 'uploads')
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+
+# Create upload directories
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+os.makedirs(os.path.join(app.config['UPLOAD_FOLDER'], 'documents'), exist_ok=True)
+os.makedirs(os.path.join(app.config['UPLOAD_FOLDER'], 'photos'), exist_ok=True)
+os.makedirs(os.path.join(app.config['UPLOAD_FOLDER'], 'videos'), exist_ok=True)
+
+db = SQLAlchemy(app)
+migrate = Migrate(app, db)
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login'
+
+# Encryption key for sensitive data
+ENCRYPTION_KEY = os.environ.get('ENCRYPTION_KEY', Fernet.generate_key().decode())
+cipher_suite = Fernet(ENCRYPTION_KEY.encode() if isinstance(ENCRYPTION_KEY, str) else ENCRYPTION_KEY)
+
+# ==================== MODELS ====================
+
+class User(UserMixin, db.Model):
+    """Users with roles: practitioner, assistant, patient"""
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    password_hash = db.Column(db.String(255), nullable=False)
+    first_name = db.Column(db.String(100), nullable=False)
+    last_name = db.Column(db.String(100), nullable=False)
+    phone = db.Column(db.String(20))
+    role = db.Column(db.String(20), nullable=False, default='patient')  # practitioner, assistant, patient
+    specialty = db.Column(db.String(100))  # For practitioners
+    rpps_number = db.Column(db.String(50))  # For practitioners
+    is_active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    last_login = db.Column(db.DateTime)
+    
+    # Relations
+    patients = relationship('Patient', foreign_keys='Patient.practitioner_id', backref='practitioner', lazy=True)
+    appointments = relationship('Appointment', foreign_keys='Appointment.practitioner_id', backref='practitioner', lazy=True)
+    sent_messages = relationship('Message', foreign_keys='Message.sender_id', backref='sender', lazy=True)
+    received_messages = relationship('Message', foreign_keys='Message.recipient_id', backref='recipient', lazy=True)
+    audit_logs = relationship('AuditLog', backref='user', lazy=True)
+
+class Patient(db.Model):
+    """Patient records (CRM)"""
+    id = db.Column(db.Integer, primary_key=True)
+    practitioner_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    first_name = db.Column(db.String(100), nullable=False)
+    last_name = db.Column(db.String(100), nullable=False)
+    birth_date = db.Column(db.Date)
+    gender = db.Column(db.String(10))  # M, F, Other
+    email = db.Column(db.String(120))
+    phone = db.Column(db.String(20))
+    address = db.Column(db.Text)
+    city = db.Column(db.String(100))
+    postal_code = db.Column(db.String(10))
+    social_security_number = db.Column(db.String(50))  # Encrypted
+    insurance_provider = db.Column(db.String(100))
+    emergency_contact_name = db.Column(db.String(100))
+    emergency_contact_phone = db.Column(db.String(20))
+    medical_history = db.Column(db.Text)  # Antécédents
+    allergies = db.Column(db.Text)
+    current_medications = db.Column(db.Text)
+    objectives = db.Column(db.Text)  # Objectifs thérapeutiques
+    notes = db.Column(db.Text)  # Notes internes
+    is_archived = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relations
+    appointments = relationship('Appointment', backref='patient', lazy=True)
+    medical_records = relationship('MedicalRecord', backref='patient', lazy=True)
+    documents = relationship('Document', backref='patient', lazy=True)
+    invoices = relationship('Invoice', backref='patient', lazy=True)
+    exercise_programs = relationship('ExerciseProgram', backref='patient', lazy=True)
+    user_account = db.Column(db.Integer, db.ForeignKey('user.id'))  # Link to User if patient has portal access
+
+class Appointment(db.Model):
+    """Appointments/Calendar"""
+    id = db.Column(db.Integer, primary_key=True)
+    practitioner_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    patient_id = db.Column(db.Integer, db.ForeignKey('patient.id'))
+    title = db.Column(db.String(200))
+    start_time = db.Column(db.DateTime, nullable=False)
+    end_time = db.Column(db.DateTime, nullable=False)
+    duration = db.Column(db.Integer)  # in minutes
+    status = db.Column(db.String(20), default='scheduled')  # scheduled, confirmed, completed, cancelled, no_show
+    appointment_type = db.Column(db.String(50))  # consultation, follow_up, etc.
+    notes = db.Column(db.Text)
+    reminder_sent = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    # Relations
+    medical_record = relationship('MedicalRecord', backref='appointment', uselist=False, lazy=True)
+
+class MedicalRecord(db.Model):
+    """Medical records for each session"""
+    id = db.Column(db.Integer, primary_key=True)
+    patient_id = db.Column(db.Integer, db.ForeignKey('patient.id'), nullable=False)
+    appointment_id = db.Column(db.Integer, db.ForeignKey('appointment.id'))
+    practitioner_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    session_date = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    notes = db.Column(db.Text)
+    tags = db.Column(db.String(500))  # JSON array of tags
+    pain_level = db.Column(db.Integer)  # 0-10
+    mobility_score = db.Column(db.Integer)  # 0-10
+    amplitude_score = db.Column(db.Integer)  # 0-10
+    treatment_protocol = db.Column(db.String(200))
+    next_session_planned = db.Column(db.DateTime)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    # Relations
+    attachments = relationship('RecordAttachment', backref='medical_record', lazy=True)
+
+class RecordAttachment(db.Model):
+    """Photos/videos attached to medical records"""
+    id = db.Column(db.Integer, primary_key=True)
+    record_id = db.Column(db.Integer, db.ForeignKey('medical_record.id'), nullable=False)
+    file_path = db.Column(db.String(500), nullable=False)
+    file_type = db.Column(db.String(20))  # photo, video, document
+    description = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class Document(db.Model):
+    """Documents attached to patients"""
+    id = db.Column(db.Integer, primary_key=True)
+    patient_id = db.Column(db.Integer, db.ForeignKey('patient.id'), nullable=False)
+    title = db.Column(db.String(200), nullable=False)
+    file_path = db.Column(db.String(500), nullable=False)
+    document_type = db.Column(db.String(50))  # prescription, report, scan, etc.
+    description = db.Column(db.Text)
+    uploaded_by = db.Column(db.Integer, db.ForeignKey('user.id'))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class Invoice(db.Model):
+    """Invoices and billing"""
+    id = db.Column(db.Integer, primary_key=True)
+    patient_id = db.Column(db.Integer, db.ForeignKey('patient.id'), nullable=False)
+    practitioner_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    invoice_number = db.Column(db.String(50), unique=True, nullable=False)
+    invoice_date = db.Column(db.Date, default=date.today, nullable=False)
+    due_date = db.Column(db.Date)
+    items = db.Column(db.Text)  # JSON array of items
+    subtotal = db.Column(db.Numeric(10, 2), nullable=False)
+    tax = db.Column(db.Numeric(10, 2), default=0)
+    total = db.Column(db.Numeric(10, 2), nullable=False)
+    status = db.Column(db.String(20), default='pending')  # pending, paid, overdue, cancelled
+    payment_method = db.Column(db.String(50))
+    payment_date = db.Column(db.Date)
+    notes = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class Exercise(db.Model):
+    """Exercise library"""
+    id = db.Column(db.Integer, primary_key=True)
+    practitioner_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    title = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.Text)
+    instructions = db.Column(db.Text)
+    video_url = db.Column(db.String(500))
+    image_url = db.Column(db.String(500))
+    category = db.Column(db.String(100))  # stretching, strengthening, etc.
+    difficulty_level = db.Column(db.String(20))  # beginner, intermediate, advanced
+    duration_minutes = db.Column(db.Integer)
+    repetitions = db.Column(db.String(50))
+    is_template = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class ExerciseProgram(db.Model):
+    """Exercise programs assigned to patients"""
+    id = db.Column(db.Integer, primary_key=True)
+    patient_id = db.Column(db.Integer, db.ForeignKey('patient.id'), nullable=False)
+    practitioner_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    title = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.Text)
+    start_date = db.Column(db.Date, default=date.today)
+    end_date = db.Column(db.Date)
+    exercises = db.Column(db.Text)  # JSON array of exercise IDs with instructions
+    status = db.Column(db.String(20), default='active')  # active, completed, paused
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    # Relations
+    completions = relationship('ExerciseCompletion', backref='program', lazy=True)
+
+class ExerciseCompletion(db.Model):
+    """Track exercise completion by patients"""
+    id = db.Column(db.Integer, primary_key=True)
+    program_id = db.Column(db.Integer, db.ForeignKey('exercise_program.id'), nullable=False)
+    exercise_id = db.Column(db.Integer, db.ForeignKey('exercise.id'), nullable=False)
+    completion_date = db.Column(db.DateTime, default=datetime.utcnow)
+    notes = db.Column(db.Text)
+    pain_level_after = db.Column(db.Integer)
+    adherence_score = db.Column(db.Integer)  # 0-10
+
+class Message(db.Model):
+    """Secure messaging system"""
+    id = db.Column(db.Integer, primary_key=True)
+    sender_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    recipient_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    subject = db.Column(db.String(200))
+    content = db.Column(db.Text)  # Encrypted
+    is_read = db.Column(db.Boolean, default=False)
+    is_encrypted = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    # Relations
+    attachments = relationship('MessageAttachment', backref='message', lazy=True)
+
+class MessageAttachment(db.Model):
+    """Attachments for messages"""
+    id = db.Column(db.Integer, primary_key=True)
+    message_id = db.Column(db.Integer, db.ForeignKey('message.id'), nullable=False)
+    file_path = db.Column(db.String(500), nullable=False)
+    file_name = db.Column(db.String(200))
+
+class AuditLog(db.Model):
+    """Audit trail for security"""
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    action = db.Column(db.String(100), nullable=False)  # login, view_patient, edit_record, etc.
+    resource_type = db.Column(db.String(50))  # patient, appointment, invoice, etc.
+    resource_id = db.Column(db.Integer)
+    ip_address = db.Column(db.String(50))
+    user_agent = db.Column(db.String(500))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class EmailTemplate(db.Model):
+    """Email/SMS templates"""
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    template_type = db.Column(db.String(20))  # email, sms
+    subject = db.Column(db.String(200))
+    body = db.Column(db.Text, nullable=False)
+    variables = db.Column(db.String(500))  # JSON array of available variables
+    is_active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+# ==================== HELPER FUNCTIONS ====================
+
+def encrypt_data(data):
+    """Encrypt sensitive data"""
+    if data:
+        return cipher_suite.encrypt(data.encode()).decode()
+    return None
+
+def decrypt_data(encrypted_data):
+    """Decrypt sensitive data"""
+    if encrypted_data:
+        try:
+            return cipher_suite.decrypt(encrypted_data.encode()).decode()
+        except:
+            return encrypted_data
+    return None
+
+def role_required(role):
+    """Decorator to require specific role"""
+    def decorator(f):
+        @wraps(f)
+        @login_required
+        def decorated_function(*args, **kwargs):
+            if current_user.role != role:
+                flash('Accès non autorisé.', 'danger')
+                return redirect(url_for('dashboard'))
+            return f(*args, **kwargs)
+        return decorated_function
+    return decorator
+
+def log_audit(action, resource_type=None, resource_id=None):
+    """Log user actions for audit trail"""
+    if current_user.is_authenticated:
+        log = AuditLog(
+            user_id=current_user.id,
+            action=action,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            ip_address=request.remote_addr,
+            user_agent=request.headers.get('User-Agent')
+        )
+        db.session.add(log)
+        db.session.commit()
+
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
+
+# ==================== ROUTES ====================
+
+@app.route('/')
+def index():
+    if current_user.is_authenticated:
+        return redirect(url_for('dashboard'))
+    return render_template('index.html')
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        email = request.form['email']
+        password = request.form['password']
+        first_name = request.form['first_name']
+        last_name = request.form['last_name']
+        role = request.form.get('role', 'patient')
+        phone = request.form.get('phone')
+        
+        if User.query.filter_by(email=email).first():
+            flash('Cet email est déjà utilisé!', 'danger')
+            return render_template('register.html')
+        
+        user = User(
+            email=email,
+            password_hash=generate_password_hash(password),
+            first_name=first_name,
+            last_name=last_name,
+            role=role,
+            phone=phone
+        )
+        
+        if role == 'practitioner':
+            user.specialty = request.form.get('specialty')
+            user.rpps_number = request.form.get('rpps_number')
+        
+        db.session.add(user)
+        db.session.commit()
+        
+        log_audit('register', 'user', user.id)
+        flash('Compte créé avec succès!', 'success')
+        return redirect(url_for('login'))
+    
+    return render_template('register.html')
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        email = request.form['email']
+        password = request.form['password']
+        user = User.query.filter_by(email=email).first()
+        
+        if user and check_password_hash(user.password_hash, password) and user.is_active:
+            login_user(user)
+            user.last_login = datetime.utcnow()
+            db.session.commit()
+            log_audit('login')
+            return redirect(url_for('dashboard'))
+        else:
+            flash('Email ou mot de passe incorrect!', 'danger')
+    
+    return render_template('login.html')
+
+@app.route('/logout')
+@login_required
+def logout():
+    log_audit('logout')
+    logout_user()
+    return redirect(url_for('index'))
+
+@app.route('/dashboard')
+@login_required
+def dashboard():
+    if current_user.role == 'patient':
+        return redirect(url_for('patient_portal'))
+    
+    # Get upcoming appointments
+    upcoming_appointments = Appointment.query.filter(
+        Appointment.practitioner_id == current_user.id,
+        Appointment.start_time >= datetime.utcnow(),
+        Appointment.status.in_(['scheduled', 'confirmed'])
+    ).order_by(Appointment.start_time.asc()).limit(10).all()
+    
+    # Get today's appointments
+    today_start = datetime.combine(date.today(), datetime.min.time())
+    today_end = datetime.combine(date.today(), datetime.max.time())
+    today_appointments = Appointment.query.filter(
+        Appointment.practitioner_id == current_user.id,
+        Appointment.start_time >= today_start,
+        Appointment.start_time <= today_end
+    ).count()
+    
+    # Get recent patients
+    recent_patients = Patient.query.filter_by(
+        practitioner_id=current_user.id,
+        is_archived=False
+    ).order_by(Patient.created_at.desc()).limit(5).all()
+    
+    # Get pending invoices
+    pending_invoices = Invoice.query.filter(
+        Invoice.practitioner_id == current_user.id,
+        Invoice.status == 'pending'
+    ).count()
+    
+    # Get unread messages
+    unread_messages = Message.query.filter(
+        Message.recipient_id == current_user.id,
+        Message.is_read == False
+    ).count()
+    
+    # Analytics data
+    total_patients = Patient.query.filter_by(
+        practitioner_id=current_user.id,
+        is_archived=False
+    ).count()
+    
+    this_month_appointments = Appointment.query.filter(
+        Appointment.practitioner_id == current_user.id,
+        Appointment.start_time >= datetime.now().replace(day=1),
+        Appointment.status == 'completed'
+    ).count()
+    
+    return render_template('dashboard.html',
+                         upcoming_appointments=upcoming_appointments,
+                         today_appointments=today_appointments,
+                         recent_patients=recent_patients,
+                         pending_invoices=pending_invoices,
+                         unread_messages=unread_messages,
+                         total_patients=total_patients,
+                         this_month_appointments=this_month_appointments)
+
+# ==================== PATIENT MANAGEMENT ROUTES ====================
+
+@app.route('/patients')
+@login_required
+@role_required('practitioner')
+def patients():
+    search = request.args.get('search', '')
+    query = Patient.query.filter_by(practitioner_id=current_user.id, is_archived=False)
+    
+    if search:
+        query = query.filter(or_(
+            Patient.first_name.ilike(f'%{search}%'),
+            Patient.last_name.ilike(f'%{search}%'),
+            Patient.email.ilike(f'%{search}%')
+        ))
+    
+    patients_list = query.order_by(Patient.last_name.asc()).all()
+    log_audit('view_patients', 'patient')
+    return render_template('patients/list.html', patients=patients_list, search=search)
+
+@app.route('/patients/new', methods=['GET', 'POST'])
+@login_required
+@role_required('practitioner')
+def new_patient():
+    if request.method == 'POST':
+        patient = Patient(
+            practitioner_id=current_user.id,
+            first_name=request.form['first_name'],
+            last_name=request.form['last_name'],
+            birth_date=datetime.strptime(request.form['birth_date'], '%Y-%m-%d').date() if request.form.get('birth_date') else None,
+            gender=request.form.get('gender'),
+            email=request.form.get('email'),
+            phone=request.form.get('phone'),
+            address=request.form.get('address'),
+            city=request.form.get('city'),
+            postal_code=request.form.get('postal_code'),
+            social_security_number=encrypt_data(request.form.get('social_security_number')) if request.form.get('social_security_number') else None,
+            insurance_provider=request.form.get('insurance_provider'),
+            emergency_contact_name=request.form.get('emergency_contact_name'),
+            emergency_contact_phone=request.form.get('emergency_contact_phone'),
+            medical_history=request.form.get('medical_history'),
+            allergies=request.form.get('allergies'),
+            current_medications=request.form.get('current_medications'),
+            objectives=request.form.get('objectives'),
+            notes=request.form.get('notes')
+        )
+        db.session.add(patient)
+        db.session.commit()
+        log_audit('create_patient', 'patient', patient.id)
+        flash('Patient créé avec succès!', 'success')
+        return redirect(url_for('patient_detail', id=patient.id))
+    
+    return render_template('patients/new.html')
+
+@app.route('/patients/<int:id>')
+@login_required
+@role_required('practitioner')
+def patient_detail(id):
+    patient = Patient.query.get_or_404(id)
+    if patient.practitioner_id != current_user.id:
+        flash('Accès non autorisé.', 'danger')
+        return redirect(url_for('patients'))
+    
+    # Get appointments
+    appointments = Appointment.query.filter_by(patient_id=id).order_by(Appointment.start_time.desc()).limit(10).all()
+    
+    # Get medical records
+    records = MedicalRecord.query.filter_by(patient_id=id).order_by(MedicalRecord.session_date.desc()).limit(10).all()
+    
+    # Get documents
+    documents = Document.query.filter_by(patient_id=id).order_by(Document.created_at.desc()).all()
+    
+    # Get invoices
+    invoices = Invoice.query.filter_by(patient_id=id).order_by(Invoice.invoice_date.desc()).limit(10).all()
+    
+    log_audit('view_patient', 'patient', id)
+    return render_template('patients/detail.html', 
+                         patient=patient,
+                         appointments=appointments,
+                         records=records,
+                         documents=documents,
+                         invoices=invoices)
+
+@app.route('/patients/<int:id>/edit', methods=['GET', 'POST'])
+@login_required
+@role_required('practitioner')
+def edit_patient(id):
+    patient = Patient.query.get_or_404(id)
+    if patient.practitioner_id != current_user.id:
+        flash('Accès non autorisé.', 'danger')
+        return redirect(url_for('patients'))
+    
+    if request.method == 'POST':
+        patient.first_name = request.form['first_name']
+        patient.last_name = request.form['last_name']
+        if request.form.get('birth_date'):
+            patient.birth_date = datetime.strptime(request.form['birth_date'], '%Y-%m-%d').date()
+        patient.gender = request.form.get('gender')
+        patient.email = request.form.get('email')
+        patient.phone = request.form.get('phone')
+        patient.address = request.form.get('address')
+        patient.city = request.form.get('city')
+        patient.postal_code = request.form.get('postal_code')
+        if request.form.get('social_security_number'):
+            patient.social_security_number = encrypt_data(request.form.get('social_security_number'))
+        patient.insurance_provider = request.form.get('insurance_provider')
+        patient.emergency_contact_name = request.form.get('emergency_contact_name')
+        patient.emergency_contact_phone = request.form.get('emergency_contact_phone')
+        patient.medical_history = request.form.get('medical_history')
+        patient.allergies = request.form.get('allergies')
+        patient.current_medications = request.form.get('current_medications')
+        patient.objectives = request.form.get('objectives')
+        patient.notes = request.form.get('notes')
+        patient.updated_at = datetime.utcnow()
+        
+        db.session.commit()
+        log_audit('edit_patient', 'patient', id)
+        flash('Patient mis à jour!', 'success')
+        return redirect(url_for('patient_detail', id=id))
+    
+    return render_template('patients/edit.html', patient=patient)
+
+@app.route('/patients/<int:id>/archive', methods=['POST'])
+@login_required
+@role_required('practitioner')
+def archive_patient(id):
+    patient = Patient.query.get_or_404(id)
+    if patient.practitioner_id != current_user.id:
+        flash('Accès non autorisé.', 'danger')
+        return redirect(url_for('patients'))
+    
+    patient.is_archived = True
+    db.session.commit()
+    log_audit('archive_patient', 'patient', id)
+    flash('Patient archivé.', 'success')
+    return redirect(url_for('patients'))
+
+# ==================== APPOINTMENT ROUTES ====================
+
+@app.route('/appointments')
+@login_required
+@role_required('practitioner')
+def appointments():
+    view = request.args.get('view', 'week')  # day, week, month
+    date_str = request.args.get('date', datetime.now().strftime('%Y-%m-%d'))
+    selected_date = datetime.strptime(date_str, '%Y-%m-%d')
+    
+    if view == 'day':
+        start = datetime.combine(selected_date.date(), datetime.min.time())
+        end = datetime.combine(selected_date.date(), datetime.max.time())
+        appointments_list = Appointment.query.filter(
+            Appointment.practitioner_id == current_user.id,
+            Appointment.start_time >= start,
+            Appointment.start_time <= end
+        ).order_by(Appointment.start_time.asc()).all()
+    elif view == 'week':
+        week_start = selected_date - timedelta(days=selected_date.weekday())
+        week_end = week_start + timedelta(days=6)
+        appointments_list = Appointment.query.filter(
+            Appointment.practitioner_id == current_user.id,
+            Appointment.start_time >= week_start,
+            Appointment.start_time <= week_end
+        ).order_by(Appointment.start_time.asc()).all()
+    else:  # month
+        month_start = selected_date.replace(day=1)
+        if month_start.month == 12:
+            month_end = month_start.replace(year=month_start.year + 1, month=1)
+        else:
+            month_end = month_start.replace(month=month_start.month + 1)
+        appointments_list = Appointment.query.filter(
+            Appointment.practitioner_id == current_user.id,
+            Appointment.start_time >= month_start,
+            Appointment.start_time < month_end
+        ).order_by(Appointment.start_time.asc()).all()
+    
+    patients = Patient.query.filter_by(practitioner_id=current_user.id, is_archived=False).all()
+    log_audit('view_appointments', 'appointment')
+    return render_template('appointments/calendar.html',
+                         appointments=appointments_list,
+                         view=view,
+                         selected_date=selected_date,
+                         patients=patients)
+
+@app.route('/appointments/new', methods=['GET', 'POST'])
+@login_required
+@role_required('practitioner')
+def new_appointment():
+    if request.method == 'POST':
+        appointment = Appointment(
+            practitioner_id=current_user.id,
+            patient_id=int(request.form['patient_id']) if request.form.get('patient_id') else None,
+            title=request.form.get('title'),
+            start_time=datetime.strptime(request.form['start_time'], '%Y-%m-%dT%H:%M'),
+            end_time=datetime.strptime(request.form['end_time'], '%Y-%m-%dT%H:%M'),
+            duration=int(request.form.get('duration', 30)),
+            status=request.form.get('status', 'scheduled'),
+            appointment_type=request.form.get('appointment_type'),
+            notes=request.form.get('notes')
+        )
+        db.session.add(appointment)
+        db.session.commit()
+        log_audit('create_appointment', 'appointment', appointment.id)
+        flash('Rendez-vous créé!', 'success')
+        return redirect(url_for('appointments'))
+    
+    patient_id = request.args.get('patient_id', type=int)
+    patients = Patient.query.filter_by(practitioner_id=current_user.id, is_archived=False).all()
+    return render_template('appointments/new.html', patients=patients, patient_id=patient_id)
+
+@app.route('/appointments/<int:id>')
+@login_required
+@role_required('practitioner')
+def appointment_detail(id):
+    appointment = Appointment.query.get_or_404(id)
+    if appointment.practitioner_id != current_user.id:
+        flash('Accès non autorisé.', 'danger')
+        return redirect(url_for('appointments'))
+    
+    return render_template('appointments/detail.html', appointment=appointment)
+
+@app.route('/appointments/<int:id>/update_status', methods=['POST'])
+@login_required
+@role_required('practitioner')
+def update_appointment_status(id):
+    appointment = Appointment.query.get_or_404(id)
+    if appointment.practitioner_id != current_user.id:
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    appointment.status = request.json.get('status')
+    db.session.commit()
+    log_audit('update_appointment_status', 'appointment', id)
+    return jsonify({'success': True})
+
+# ==================== MEDICAL RECORDS ROUTES ====================
+
+@app.route('/records/new', methods=['GET', 'POST'])
+@login_required
+@role_required('practitioner')
+def new_medical_record():
+    if request.method == 'POST':
+        patient_id = int(request.form['patient_id'])
+        patient = Patient.query.get_or_404(patient_id)
+        if patient.practitioner_id != current_user.id:
+            flash('Accès non autorisé.', 'danger')
+            return redirect(url_for('patients'))
+        
+        tags = request.form.getlist('tags')
+        record = MedicalRecord(
+            patient_id=patient_id,
+            appointment_id=int(request.form['appointment_id']) if request.form.get('appointment_id') else None,
+            practitioner_id=current_user.id,
+            session_date=datetime.strptime(request.form['session_date'], '%Y-%m-%dT%H:%M') if request.form.get('session_date') else datetime.utcnow(),
+            notes=request.form.get('notes'),
+            tags=json.dumps(tags),
+            pain_level=int(request.form['pain_level']) if request.form.get('pain_level') else None,
+            mobility_score=int(request.form['mobility_score']) if request.form.get('mobility_score') else None,
+            amplitude_score=int(request.form['amplitude_score']) if request.form.get('amplitude_score') else None,
+            treatment_protocol=request.form.get('treatment_protocol'),
+            next_session_planned=datetime.strptime(request.form['next_session_planned'], '%Y-%m-%dT%H:%M') if request.form.get('next_session_planned') else None
+        )
+        db.session.add(record)
+        db.session.commit()
+        
+        # Handle file uploads
+        if 'attachments' in request.files:
+            files = request.files.getlist('attachments')
+            for file in files:
+                if file.filename:
+                    filename = secure_filename(file.filename)
+                    file_type = 'photo' if filename.lower().endswith(('.jpg', '.jpeg', '.png', '.gif')) else 'video' if filename.lower().endswith(('.mp4', '.mov', '.avi')) else 'document'
+                    folder = 'photos' if file_type == 'photo' else 'videos' if file_type == 'video' else 'documents'
+                    filepath = os.path.join(app.config['UPLOAD_FOLDER'], folder, f"{uuid.uuid4()}_{filename}")
+                    file.save(filepath)
+                    
+                    attachment = RecordAttachment(
+                        record_id=record.id,
+                        file_path=filepath,
+                        file_type=file_type
+                    )
+                    db.session.add(attachment)
+        
+        db.session.commit()
+        log_audit('create_medical_record', 'medical_record', record.id)
+        flash('Dossier médical créé!', 'success')
+        return redirect(url_for('patient_detail', id=patient_id))
+    
+    patient_id = request.args.get('patient_id', type=int)
+    appointment_id = request.args.get('appointment_id', type=int)
+    patients = Patient.query.filter_by(practitioner_id=current_user.id, is_archived=False).all()
+    return render_template('records/new.html', patients=patients, patient_id=patient_id, appointment_id=appointment_id)
+
+# ==================== INVOICE ROUTES ====================
+
+@app.route('/invoices')
+@login_required
+@role_required('practitioner')
+def invoices():
+    status_filter = request.args.get('status')
+    query = Invoice.query.filter_by(practitioner_id=current_user.id)
+    
+    if status_filter:
+        query = query.filter_by(status=status_filter)
+    
+    invoices_list = query.order_by(Invoice.invoice_date.desc()).all()
+    return render_template('invoices/list.html', invoices=invoices_list, status_filter=status_filter)
+
+@app.route('/invoices/new', methods=['GET', 'POST'])
+@login_required
+@role_required('practitioner')
+def new_invoice():
+    if request.method == 'POST':
+        items = json.loads(request.form.get('items', '[]'))
+        subtotal = sum(float(item.get('price', 0)) * float(item.get('quantity', 1)) for item in items)
+        tax = float(request.form.get('tax', 0))
+        total = subtotal + tax
+        
+        invoice_number = f"INV-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
+        
+        invoice = Invoice(
+            patient_id=int(request.form['patient_id']),
+            practitioner_id=current_user.id,
+            invoice_number=invoice_number,
+            invoice_date=datetime.strptime(request.form['invoice_date'], '%Y-%m-%d').date() if request.form.get('invoice_date') else date.today(),
+            due_date=datetime.strptime(request.form['due_date'], '%Y-%m-%d').date() if request.form.get('due_date') else None,
+            items=json.dumps(items),
+            subtotal=subtotal,
+            tax=tax,
+            total=total,
+            status=request.form.get('status', 'pending'),
+            notes=request.form.get('notes')
+        )
+        db.session.add(invoice)
+        db.session.commit()
+        log_audit('create_invoice', 'invoice', invoice.id)
+        flash('Facture créée!', 'success')
+        return redirect(url_for('invoice_detail', id=invoice.id))
+    
+    patients = Patient.query.filter_by(practitioner_id=current_user.id, is_archived=False).all()
+    return render_template('invoices/new.html', patients=patients)
+
+@app.route('/invoices/<int:id>')
+@login_required
+@role_required('practitioner')
+def invoice_detail(id):
+    invoice = Invoice.query.get_or_404(id)
+    if invoice.practitioner_id != current_user.id:
+        flash('Accès non autorisé.', 'danger')
+        return redirect(url_for('invoices'))
+    
+    items_data = json.loads(invoice.items) if invoice.items else []
+    return render_template('invoices/detail.html', invoice=invoice, items=items_data)
+
+@app.route('/invoices/<int:id>/mark_paid', methods=['POST'])
+@login_required
+@role_required('practitioner')
+def mark_invoice_paid(id):
+    invoice = Invoice.query.get_or_404(id)
+    if invoice.practitioner_id != current_user.id:
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    invoice.status = 'paid'
+    invoice.payment_date = date.today()
+    invoice.payment_method = request.json.get('payment_method', 'cash')
+    db.session.commit()
+    log_audit('mark_invoice_paid', 'invoice', id)
+    return jsonify({'success': True})
+
+# ==================== EXERCISE ROUTES ====================
+
+@app.route('/exercises')
+@login_required
+@role_required('practitioner')
+def exercises():
+    exercises_list = Exercise.query.filter_by(practitioner_id=current_user.id).all()
+    return render_template('exercises/list.html', exercises=exercises_list)
+
+@app.route('/exercises/new', methods=['GET', 'POST'])
+@login_required
+@role_required('practitioner')
+def new_exercise():
+    if request.method == 'POST':
+        exercise = Exercise(
+            practitioner_id=current_user.id,
+            title=request.form['title'],
+            description=request.form.get('description'),
+            instructions=request.form.get('instructions'),
+            video_url=request.form.get('video_url'),
+            image_url=request.form.get('image_url'),
+            category=request.form.get('category'),
+            difficulty_level=request.form.get('difficulty_level'),
+            duration_minutes=int(request.form['duration_minutes']) if request.form.get('duration_minutes') else None,
+            repetitions=request.form.get('repetitions')
+        )
+        db.session.add(exercise)
+        db.session.commit()
+        flash('Exercice créé!', 'success')
+        return redirect(url_for('exercises'))
+    
+    return render_template('exercises/new.html')
+
+@app.route('/exercises/programs')
+@login_required
+@role_required('practitioner')
+def exercise_programs():
+    programs = ExerciseProgram.query.filter_by(practitioner_id=current_user.id).all()
+    return render_template('exercises/programs.html', programs=programs)
+
+@app.template_filter('tojson')
+def tojson_filter(value):
+    return json.dumps(value)
+
+@app.route('/exercises/programs/new', methods=['GET', 'POST'])
+@login_required
+@role_required('practitioner')
+def new_exercise_program():
+    if request.method == 'POST':
+        exercises_data = json.loads(request.form.get('exercises', '[]'))
+        program = ExerciseProgram(
+            patient_id=int(request.form['patient_id']),
+            practitioner_id=current_user.id,
+            title=request.form['title'],
+            description=request.form.get('description'),
+            start_date=datetime.strptime(request.form['start_date'], '%Y-%m-%d').date() if request.form.get('start_date') else date.today(),
+            end_date=datetime.strptime(request.form['end_date'], '%Y-%m-%d').date() if request.form.get('end_date') else None,
+            exercises=json.dumps(exercises_data),
+            status='active'
+        )
+        db.session.add(program)
+        db.session.commit()
+        log_audit('create_exercise_program', 'exercise_program', program.id)
+        flash('Programme d\'exercices créé!', 'success')
+        return redirect(url_for('exercise_programs'))
+    
+    patients = Patient.query.filter_by(practitioner_id=current_user.id, is_archived=False).all()
+    exercises = Exercise.query.filter_by(practitioner_id=current_user.id).all()
+    exercises_list = [{'id': e.id, 'title': e.title} for e in exercises]
+    return render_template('exercises/new_program.html', patients=patients, exercises=exercises_list)
+
+# ==================== MESSAGING ROUTES ====================
+
+@app.route('/messages')
+@login_required
+def messages():
+    messages_list = Message.query.filter(
+        or_(Message.sender_id == current_user.id, Message.recipient_id == current_user.id)
+    ).order_by(Message.created_at.desc()).all()
+    return render_template('messages/list.html', messages=messages_list)
+
+@app.route('/messages/new', methods=['GET', 'POST'])
+@login_required
+def new_message():
+    if request.method == 'POST':
+        content = request.form['content']
+        encrypted_content = encrypt_data(content)
+        
+        message = Message(
+            sender_id=current_user.id,
+            recipient_id=int(request.form['recipient_id']),
+            subject=request.form.get('subject'),
+            content=encrypted_content,
+            is_encrypted=True
+        )
+        db.session.add(message)
+        db.session.commit()
+        flash('Message envoyé!', 'success')
+        return redirect(url_for('messages'))
+    
+    recipients = User.query.filter(User.id != current_user.id).all()
+    return render_template('messages/new.html', recipients=recipients)
+
+# ==================== ANALYTICS ROUTES ====================
+
+@app.route('/analytics')
+@login_required
+@role_required('practitioner')
+def analytics():
+    # New patients this month
+    month_start = datetime.now().replace(day=1)
+    new_patients = Patient.query.filter(
+        Patient.practitioner_id == current_user.id,
+        Patient.created_at >= month_start
+    ).count()
+    
+    # Cancellation rate
+    total_appointments = Appointment.query.filter(
+        Appointment.practitioner_id == current_user.id,
+        Appointment.start_time >= month_start
+    ).count()
+    cancelled_appointments = Appointment.query.filter(
+        Appointment.practitioner_id == current_user.id,
+        Appointment.status == 'cancelled',
+        Appointment.start_time >= month_start
+    ).count()
+    cancellation_rate = (cancelled_appointments / total_appointments * 100) if total_appointments > 0 else 0
+    
+    # Revenue
+    revenue = db.session.query(func.sum(Invoice.total)).filter(
+        Invoice.practitioner_id == current_user.id,
+        Invoice.status == 'paid',
+        Invoice.payment_date >= month_start
+    ).scalar() or 0
+    
+    # Exercise completions
+    completions = db.session.query(func.count(ExerciseCompletion.id)).join(
+        ExerciseProgram
+    ).filter(
+        ExerciseProgram.practitioner_id == current_user.id,
+        ExerciseCompletion.completion_date >= month_start
+    ).scalar() or 0
+    
+    # Average treatment duration
+    # This would require more complex query based on first and last appointment
+    
+    return render_template('analytics/dashboard.html',
+                         new_patients=new_patients,
+                         cancellation_rate=round(cancellation_rate, 2),
+                         revenue=float(revenue),
+                         exercise_completions=completions)
+
+# ==================== PATIENT PORTAL ROUTES ====================
+
+@app.route('/patient-portal')
+@login_required
+def patient_portal():
+    if current_user.role != 'patient':
+        return redirect(url_for('dashboard'))
+    
+    # Find patient record
+    patient = Patient.query.filter_by(user_account=current_user.id).first()
+    if not patient:
+        flash('Aucun dossier patient trouvé.', 'warning')
+        return render_template('patient_portal/index.html', patient=None)
+    
+    # Get upcoming appointments
+    appointments = Appointment.query.filter(
+        Appointment.patient_id == patient.id,
+        Appointment.status.in_(['scheduled', 'confirmed'])
+    ).order_by(Appointment.start_time.asc()).all()
+    
+    # Get exercise programs
+    programs = ExerciseProgram.query.filter_by(
+        patient_id=patient.id,
+        status='active'
+    ).all()
+    
+    # Get documents
+    documents = Document.query.filter_by(patient_id=patient.id).order_by(Document.created_at.desc()).all()
+    
+    return render_template('patient_portal/index.html',
+                         patient=patient,
+                         appointments=appointments,
+                         programs=programs,
+                         documents=documents)
+
+@app.route('/patient-portal/book-appointment', methods=['GET', 'POST'])
+@login_required
+def book_appointment():
+    if current_user.role != 'patient':
+        return redirect(url_for('dashboard'))
+    
+    patient = Patient.query.filter_by(user_account=current_user.id).first()
+    if not patient:
+        flash('Aucun dossier patient trouvé.', 'warning')
+        return redirect(url_for('patient_portal'))
+    
+    if request.method == 'POST':
+        # In a real app, you'd select from available slots
+        appointment = Appointment(
+            practitioner_id=patient.practitioner_id,
+            patient_id=patient.id,
+            start_time=datetime.strptime(request.form['start_time'], '%Y-%m-%dT%H:%M'),
+            end_time=datetime.strptime(request.form['end_time'], '%Y-%m-%dT%H:%M'),
+            status='pending',
+            notes=request.form.get('notes')
+        )
+        db.session.add(appointment)
+        db.session.commit()
+        flash('Demande de rendez-vous envoyée!', 'success')
+        return redirect(url_for('patient_portal'))
+    
+    return render_template('patient_portal/book_appointment.html', patient=patient)
+
+# ==================== API ROUTES ====================
+
+@app.route('/api/appointments')
+@login_required
+@role_required('practitioner')
+def api_appointments():
+    start = request.args.get('start')
+    end = request.args.get('end')
+    
+    query = Appointment.query.filter_by(practitioner_id=current_user.id)
+    
+    if start:
+        query = query.filter(Appointment.start_time >= datetime.fromisoformat(start))
+    if end:
+        query = query.filter(Appointment.start_time <= datetime.fromisoformat(end))
+    
+    appointments = query.all()
+    return jsonify([{
+        'id': a.id,
+        'title': a.title or (a.patient.first_name + ' ' + a.patient.last_name if a.patient else 'Rendez-vous'),
+        'start': a.start_time.isoformat(),
+        'end': a.end_time.isoformat(),
+        'status': a.status,
+        'patient_id': a.patient_id
+    } for a in appointments])
+
+@app.route('/api/appointments/<int:id>', methods=['PUT'])
+@login_required
+@role_required('practitioner')
+def api_update_appointment(id):
+    appointment = Appointment.query.get_or_404(id)
+    if appointment.practitioner_id != current_user.id:
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    data = request.json
+    if 'start_time' in data:
+        appointment.start_time = datetime.fromisoformat(data['start_time'])
+    if 'end_time' in data:
+        appointment.end_time = datetime.fromisoformat(data['end_time'])
+    if 'patient_id' in data:
+        appointment.patient_id = data['patient_id']
+    
+    db.session.commit()
+    return jsonify({'success': True})
+
+@app.route('/api/toggle-dark-mode', methods=['POST'])
+@login_required
+def toggle_dark_mode():
+    session['dark_mode'] = request.json.get('dark_mode', False)
+    return jsonify({'success': True})
+
+# Jinja2 filters
+@app.template_filter('from_json')
+def from_json_filter(value):
+    if value:
+        try:
+            return json.loads(value)
+        except:
+            return []
+    return []
+
+if __name__ == '__main__':
+    with app.app_context():
+        db.create_all()
+        
+        # Create default email templates
+        if not EmailTemplate.query.first():
+            templates = [
+                EmailTemplate(
+                    name='Confirmation de rendez-vous',
+                    template_type='email',
+                    subject='Confirmation de votre rendez-vous',
+                    body='Bonjour {{patient_name}},\n\nVotre rendez-vous est confirmé pour le {{appointment_date}} à {{appointment_time}}.\n\nCordialement,\n{{practitioner_name}}',
+                    variables=json.dumps(['patient_name', 'appointment_date', 'appointment_time', 'practitioner_name'])
+                ),
+                EmailTemplate(
+                    name='Rappel de rendez-vous',
+                    template_type='email',
+                    subject='Rappel: Votre rendez-vous demain',
+                    body='Bonjour {{patient_name}},\n\nCeci est un rappel pour votre rendez-vous demain à {{appointment_time}}.\n\nCordialement,\n{{practitioner_name}}',
+                    variables=json.dumps(['patient_name', 'appointment_time', 'practitioner_name'])
+                ),
+                EmailTemplate(
+                    name='Annulation de rendez-vous',
+                    template_type='email',
+                    subject='Annulation de votre rendez-vous',
+                    body='Bonjour {{patient_name}},\n\nVotre rendez-vous du {{appointment_date}} a été annulé.\n\nCordialement,\n{{practitioner_name}}',
+                    variables=json.dumps(['patient_name', 'appointment_date', 'practitioner_name'])
+                )
+            ]
+            for template in templates:
+                db.session.add(template)
+            db.session.commit()
+    
+    app.run(debug=True)
+

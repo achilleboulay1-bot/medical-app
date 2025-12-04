@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+
+{% block title %}Facture {{ invoice.invoice_number }}{% endblock %}
+
+{% block content %}
+<h2>Facture {{ invoice.invoice_number }}</h2>
+
+<div class="card">
+    <p><strong>Date:</strong> {{ invoice.invoice_date.strftime('%d/%m/%Y') }}</p>
+    <p><strong>Patient:</strong> {{ invoice.patient.first_name }} {{ invoice.patient.last_name }}</p>
+    <p><strong>Statut:</strong> {{ invoice.status }}</p>
+    <p><strong>Total:</strong> {{ invoice.total }} €</p>
+</div>
+{% endblock %}
+
